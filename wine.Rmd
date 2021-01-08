@@ -1,0 +1,468 @@
+---
+title: "Red Wine"
+author: "PedroCadilha"
+date: "04/01/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preface
+
+This report is part of the capstone project of HarvardX’s Data Science Professional Certificate1 program.\par
+The R Markdown code used to generate this report and the R script are available on GitHub.
+
+## 1. Introduction
+
+In this project we are going to analyze the Red Wine dataset which is related to the portuguese wine "Vinho verde tinto". In this dataset several wines were given a quality classification. Due to privacy and logistic issues, only physicochemical (inputs) and sensory (the output) variables are available (e.g. there is no data about grape types, wine brand, wine selling price, etc.).\par
+In the following sections we are going to do an overview of the dataset to become familiar with it, setting up the path for the modeling section.\par
+In a first approach we are going to use logistic regression, knn nearest neighbors and random forest models, based on this results we will notice that due to the nature of our data (limited number of good wines) we will have to use techniques to achieve better results. We are going to use methods to subsample it, namely, upsampling, downsampling and hybrid methods. This new datasets are going to be modeled using only the Random Forest model.\par 
+We will use the F1 scores to evaluate our results.\par  
+By the end of this project we will be able to predict the quality of a wine based on it's characteristics and also point out which of them are the most important to have a good wine.\par
+
+
+## 2. Data preparation and exploration
+
+The dataset was created by Paulo Cortez, University of Minho, Guimarães, Portugal, in 2009, and downloaded from the UCI Machine Learning Repository.
+
+```{r include=FALSE}
+#Installing the libraries needed to run the code if not already installed
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(ROSE)) install.packages("ROSE", repos = "http://cran.us.r-project.org")
+if(!require(DMwR)) install.packages("DMwR", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(ROSE)
+library(DMwR)
+library(randomForest)
+options(digits=3)
+
+# Downloading the data set
+wine<-"https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv"
+basename(wine)
+download.file(wine,basename(wine))
+winedata<-read.csv("winequality-red.csv")
+head(winedata)
+```
+
+There is some data wrangling we had to do with the delimiters and decimal marks. We changed also the column names.\par
+
+```{r include=FALSE}
+# Data wrangling, removing delimiters and renaming columns
+winedata<-read_delim("winequality-red.csv", 
+                    delim = ";", 
+                    locale = locale(decimal_mark = ".", 
+                                    grouping_mark = ","), 
+                    col_names = TRUE)
+
+cnames <- c("fixed_acidity", "volatile_acidity", "citric_acid",
+            "residual_sugar", "chlorides", "free_sulfur_dioxide",
+            "total_sulfur_dioxide", "density", "pH",
+            "sulphates", "alcohol", "quality")
+
+colnames(winedata)<-cnames
+winedata<-as.data.frame(winedata)
+```
+
+Our data now looks like this:\par
+
+```{r echo=FALSE}
+head(winedata)
+```
+
+
+We have a dataset with 1599 rows (wine observations) and 12 columns (11 wine features plus the column quality).
+The features are:\par
+
+**Fixed acidity** - Most acids involved with wine or fixed or nonvolatile (do not evaporate readily).\par
+**Volatile acidity** - The amount of acetic acid in wine, which at too high levels can lead to an unpleasant, vinegar taste.\par
+**Citric acid** - Found in small quantities, citric acid can add freshness and flavor to wines.\par
+**Residual sugar** - Quantity of sugar left in the wine after the fermentation process. To summarize, a dry wine contains from 0 to 4 grams of sugar per liter, a semi-dry wine from 4 to 12 grams per liter, a semi-sweet wine from 8 to 45 grams per liter and a sweet wine contains more than 45 grams per liter.\par
+**Chlorides** - The amount of salt in the wine.\par
+**Free sulfur dioxide** - The portion of SO~2~ that is free in the wine\par
+**Total sulfur dioxide** - Amount of free and bound forms of S0~2~ in the wine. The sulfur dioxide prevents the wine from reacting with oxygen which can cause browning and off-odors (oxidation), and it inhibits the growth of bacteria and undesirable wild yeasts in the grape juice and wine\par
+**Density** - Is close to water density, depending on the percent alcohol and sugar content.\par
+**ph** - Typically, the pH level of a wine ranges from 3 to 4. Red wines with higher acidity are more likely to be a bright ruby color, as the lower pH gives them a red hue.\par
+**Sulphates** - A wine additive which can contribute to sulfur dioxide gas (S0~2~) levels, which acts as an antimicrobial and antioxidant.
+**Alcohol** - Alcohol content range from as little as 5.5% alcohol by volume to as much as around 20%.\par
+
+The quality of the wine is distributed like this:\par
+
+```{r echo=FALSE, fig.height=2, fig.width=3}
+winedata%>%ggplot(aes(quality))+geom_histogram(bins=20)
+```
+
+Clearly there is a majority of average wines (quality 5 or 6) and a small amount of poor (3 and 4) or good wines (7 or 8).\par 
+I remember that we want to identify good wines, so we are going to apply a cutoff on wine quality. The wines with quality equal or above 7 are going to be classified as "good" (category "1") and the wines with quality below 7 are going to be classified as "no good" (category "0").\par
+After this cutoff we have now:\par
+ 
+```{r echo=FALSE}
+#Applying cutoff and factorizing on wine quality 
+winedata<-winedata%>%mutate(quality=ifelse(quality>=7,"1","0"))%>%mutate(quality=factor(quality))
+table(winedata$quality)
+```
+ 
+Giving a proportion between wines of:\par
+
+```{r echo=FALSE}
+prop.table(table(winedata$quality))
+```
+
+We are going to do boxplots of all the features vs. quality to have an overview of the data:\par
+
+```{r echo=FALSE}
+winedata%>%gather(wine_properties, values, -quality)%>%
+  ggplot(aes(quality, values, fill=quality))+geom_boxplot()+
+  facet_wrap(~wine_properties,scales="free")+
+  theme(axis.text.x = element_blank())
+```
+
+Looking at this boxplots we get an idea about the distribution of each feature in the wine. Notice that all the features are present in both wines, with the alcohol and citric acid (freshness and flavor) having a bigger presence in the good wines and the volatile acidity in the bad ones (vinegar taste).
+
+
+## 3. Modeling
+
+The data was partitioned in a training and test set.\par
+
+```{r include=FALSE}
+set.seed(2020, sample.kind = "Rounding")
+index<-createDataPartition(winedata$quality,times=1, p=0.2, list=FALSE)
+test<-winedata[index,]
+train<-winedata[-index,]
+```
+
+After this, we have a training set like this:
+
+```{r echo=FALSE}
+table(train$quality)
+```
+
+and a test set with:
+
+```{r echo=FALSE}
+table(test$quality)
+```
+
+It seem that our classes are unbalanced! There are much less good wines in our data.
+On a first approach we are going to apply logistic regression, knn-nearest neighbors and random forest models to train our data.\par
+Before we run in to this methods we will clarify some concepts which are going to be used to evaluate them.
+Overall accuracy can sometimes be a deceptive measure because of unbalanced classes.\par
+In this cases the study of sensitivity, specificity and precision might help:\par
+**Sensitivity**- True positive rate or recall. Also known as **Recall**. Is the proportion of actual positive overcomes correctly identified as such.\par
+**Specificity**- True negative rate. Is the proportion of actual negative outcomes that are correctly identified as such.\par
+**Precision** - Positive predicted value. Is the proportion of correctly predicted positive observations to the total predicted positive observations.
+The confusion matrix tabulates each combination of prediction and actual value. We can create a confusion matrix in R using the **confusionMatrix()** function from the **caret** package.\par
+So let's start modeling:  
+
+### 3.1 Logistic regression model
+```{r echo=FALSE}
+#Logistic Regression model
+glm_model<-train(quality~., method="glm", data=train)
+glm_model_preds<-predict(glm_model,test)
+confusionMatrix(data=glm_model_preds,reference=test$quality, positive = "1")
+```
+
+We have a high accuracy of 0.882 but if we look closer it's only a bit better than simply guess that all wines are weak due to the low prevalence, 0.137, in our data. The most noticeable is the low sensitivity of 0.296, which means that we predicted correctly only 13 good wines in a total of 44 in our test set.
+
+### 3.2 K-Nearest Neighbours
+
+Running the Knn model, we can plot the accuracy against k to identify the optimal k to use in our model:\par
+
+```{r echo=FALSE, fig.height=3, fig.width=4, warning=FALSE}
+#K-Nearest Neighbors 
+set.seed(2020,sample.kind = "Rounding")
+tuning<-data.frame(k=seq(3,31,2))
+knn_model<-train(quality~., method="knn", data=train,tuneGrid = tuning)
+plot(knn_model)
+```
+
+```{r include=FALSE}
+knn_model$bestTune
+```
+
+From the graph we see that the optimal k is `r knn_model$bestTune` and the confusion matrix:\par
+
+```{r echo=FALSE}
+knn_model_preds<-predict(knn_model,test)
+confusionMatrix(data=knn_model_preds,reference=test$quality, positive="1")
+```
+
+This model is clearly oriented to the majority class being unable to predict correctly any good wine! The sensitivity is 0!
+
+### 3.3 Random forest model
+
+When applying the random forest model there are two parameters which are the most likely to have the biggest effect on our final accuracy:\par
+
+**mtry** - Number of variables randomly sampled as candidates at each split.\par
+**ntree** - Number of trees to grow\par
+
+Only the *mtry* parameter is available in caret for tuning, generally, in classification models, the value is about the square root of the number of predictors, since we have 11 predictors, we are going to choose a tuning interval between 1 and 5.
+
+```{r echo=FALSE, fig.height=3, fig.width=4, warning=FALSE}
+#Random forest model
+set.seed(2020,sample.kind = "Rounding")
+tuning<-data.frame(mtry=c(1:5))
+rf_model<-train(quality~.,method="rf",
+                tuneGrid=tuning,
+                importance=TRUE,
+                data=train)
+plot(rf_model)
+```
+
+```{r include=FALSE}
+rf_model$bestTune
+```
+
+We see from the plot that the best tune for mtry is `r rf_model$bestTune` and the confusion matrix is:\par
+
+```{r echo=FALSE}
+rf_model_preds<-predict(rf_model,test)
+confusionMatrix(data=rf_model_preds,reference=test$quality,positive="1")
+```
+
+Our accuracy of 0.935 is quite good but the sensitivity of 0.5455, despite of it's increase compared to the previous models is not good enough.\par
+In the logistic regression model, from the 44 good wines in the test set, we were able to predict correctly 13, 0 wines with Knn and finally 24 with the Random Forest.\par
+The results from this first approach are not satisfactory, due the unbalanced dataset with a low prevalence of good wines.\par
+
+## 4. Creating balanced dataset
+
+The simple technique to reduce the negative impact of this problem is by subsampling the data. We are going to use the following methods:\par
+
+**Upsampling** - This method increases the size of the minority class by sampling with replacement so that the classes will have the same size.\par
+**Downsampling** - Decreases the size of the majority class to be the same or closer to the minority class size by just taking out a random sample.\par
+**Hybrid methods** - Downsample the majority class and create new artificial points in the minority class. We are going to use *ROSE* (random oversampling examples) and *SMOTE* (Synthetic minority oversampling technique). It's necessary to install, respectively, the libraries ROSE and DMwR to use this techniques.\par
+Remember that our train set currently as the following distribution of wines:\par
+
+```{r echo=FALSE}
+table(train$quality)
+```
+
+Let's apply this techniques to create the new training sets.\par
+
+### 4.1 Upsampling
+
+The upsampling technique produces a train set like this:
+```{r echo=TRUE, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+train_up<-upSample(x=train[,-ncol(train)],y=train$quality)
+table(train_up$Class)
+```
+
+### 4.2 Downsampling
+
+The downsampling produces a train set like this:\par
+```{r echo=TRUE, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+train_down<-downSample(x=train[,-ncol(train)],y=train$quality)
+table(train_down$Class)
+```
+
+We point out that both **upSample** and **downSample** functions changed the name of the column for our wine quality from **quality** to **Class**.\par
+
+### 4.3 ROSE 
+
+The ROSE technique creates a more balanced dataset decreasing the majority class and increasing the minority class:\par
+
+```{r echo=TRUE, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+train_rose<-ROSE(quality ~ ., data=train)$data
+table(train_rose$quality)
+```
+
+
+### 4.4 SMOTE 
+
+Similarly SMOTE technique creates a more balanced dataset decreasing the majority class and increasing the minority class:\par
+
+```{r echo=TRUE, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+train_smote<-SMOTE(quality~., data=train)
+table(train_smote$quality)
+```
+
+
+## 5. Modeling with balanced data
+
+### 5.1 Random Forest with upsampling
+
+We are ready to start modeling with our new balanced datasets. We are going to use only random forest model since it showed better perfomance with the unbalanced dataset. We are going to use, like before, a tuning interval between 1 and 5 for mtry.\par
+
+```{r echo=FALSE, fig.height=3, fig.width=4, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+tuning<-data.frame(mtry=c(1,2,3,4,5))
+train_rf_up<-train(Class~.,method="rf",
+                tuneGrid=tuning,
+                importance=TRUE,
+                data=train_up)
+plot(train_rf_up)
+```
+
+```{r include=FALSE}
+train_rf_up$bestTune
+```
+
+Our best **mtry** is `r train_rf_up$bestTune`.\par
+
+```{r echo=FALSE}
+rf_preds_up<-predict(train_rf_up,test)
+confusionMatrix(data=rf_preds_up,
+                reference=test$quality,
+                positive="1")
+```
+
+The confusion matrix shows a slight improvement in sensitivity (from 0.54 to 0.59). We were able to predict now 26 good wines correctly, against 24 before in the original data.\par
+
+### 5.2 Random Forest with downsampling
+
+we are going to repeat the same steps with the downsample.\par
+
+```{r echo=FALSE, fig.height=3, fig.width=4, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+tuning<-data.frame(mtry=c(1,2,3,4,5))
+train_rf_down<-train(Class~.,method="rf",
+                tuneGrid=tuning,
+                importance=TRUE,
+                data=train_down)
+plot(train_rf_down)
+```
+
+
+```{r include=FALSE}
+train_rf_down$bestTune
+```
+
+Our best **mtry** is `r train_rf_down$bestTune`.\par
+
+```{r echo=FALSE}
+rf_preds_down<-predict(train_rf_down,test)
+confusionMatrix(data=factor(rf_preds_down),
+                reference=factor(test$quality),
+                positive="1")
+```
+
+The confusion matrix shows a big improvement in sensitivity (from 0.54 to 0.86). We were able to predict now 38 good wines correctly, against 24 before in the original data. With this method we lost accuracy, since we lost predictive power on the not good wines.\par
+
+### 5.3 Random Forest with ROSE
+
+Repeating the same steps with the ROSE sample:\par
+
+```{r echo=FALSE, fig.height=3, fig.width=4, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+tuning<-data.frame(mtry=c(1,2,3,4,5))
+train_rf_rose<-train(quality~.,method="rf",
+                     tuneGrid=tuning,
+                     importance=TRUE,
+                     data=train_rose)
+plot(train_rf_rose)
+```
+
+```{r include=FALSE}
+train_rf_rose$bestTune
+```
+
+Our best **mtry** is `r train_rf_rose$bestTune`.\par
+
+```{r echo=FALSE}
+rf_preds_rose<-predict(train_rf_rose,test)
+confusionMatrix(data=factor(rf_preds_rose),
+                reference=factor(test$quality),
+                positive="1")
+```
+
+The confusion matrix shows a big improvement in sensitivity (from 0.54 to 0.809). We were able to predict now 32 good wines correctly, against 24 before in the original data. With this method we lost accuracy, since we lost predictive power on the not good wines, only 224 out of 277 predicted currectly.\par
+
+
+### 5.4 Random Forest with SMOTE
+
+Repeating the same steps with the SMOTE sample:\par
+
+```{r echo=FALSE, fig.height=3, fig.width=4, warning=FALSE}
+set.seed(2020,sample.kind = "Rounding")
+tuning<-data.frame(mtry=c(1,2,3,4,5))
+train_rf_smote<-train(quality~.,method="rf",
+                     tuneGrid=tuning,
+                     importance=TRUE,
+                     data=train_smote)
+plot(train_rf_smote)
+```
+
+```{r include=FALSE}
+train_rf_smote$bestTune
+```
+
+Our best **mtry** is `r train_rf_smote$bestTune`.\par
+
+```{r echo=FALSE}
+rf_preds_smote<-predict(train_rf_smote,test)
+confusionMatrix(data=factor(rf_preds_smote),
+                reference=factor(test$quality),
+                positive="1")
+```
+
+The confusion matrix shows a big improvement in sensitivity (from 0.54 to 0.75). We were able to predict now 33 good wines correctly, against 24 before in the original data. With this method we lost accuracy, since we lost predictive power on the not good wines, only 237 out of 277 predicted currectly.\par
+
+## 6. Results 
+
+To evaluate our results we would use the **ROC curve**, *Receiver Operating Characteristic*, since the ROC curve plots **sensitivity** versus **1-specificity**. However in cases, like ours, where the prevalence matters we decided to evaluate our models with the F1 score.\par
+Sometimes it is more useful to have a one number summary, than studying both specificity and sensitivity separately.\par
+The F1-score is the harmonic average of precision and recall. When we want to balance the weight between them we need to choose $\beta$.\par
+For a $\beta$ equal to 1 they have equal weight, when we want to add more weight to recall it should be bigger to 1, and smaller for a big weight to precision.\par
+In our dataset the goal is not only to classify a wine as good when it's really good but also we **don't want to classify a bad wine as a good one**, so we are going to give more weight to **precision** than to **recall**.\par
+When we serve a wine in a restaurant as being good, it's much more important that it's really good (not a bad one served as good), than when we serve one not so good that in fact is better than expected. Therefore we are going to give a value of 0.25 to$\beta$.\par 
+The values obtained are resumed in this table:\par
+
+```{r echo=FALSE}
+# Calculation of the F meas for all our Random Forest models, with beta=0.25
+b<-0.25
+F_meas_rf<-F_meas(rf_model_preds,test$quality, beta=b)
+F_meas_rf_up<-F_meas(rf_preds_up,test$quality, beta=b)
+F_meas_rf_down<-F_meas(rf_preds_down,test$quality, beta=b)
+F_meas_rf_rose<-F_meas(rf_preds_rose,test$quality, beta=b)
+F_meas_rf_smote<-F_meas(rf_preds_smote,test$quality, beta=b)
+
+f_meas_values<-c(F_meas_rf,F_meas_rf_up,F_meas_rf_down,                          F_meas_rf_rose,F_meas_rf_smote)
+model<-c("Random Forest", "Random Forest Upsampling", "Random Forest Downsampling", "Random Forest ROSE", "Random Forest SMOTE")
+data.frame(model,f_meas_values)%>%knitr::kable()
+```
+
+From this table, the best model would be Random Forest with downsampling, with a value of F-meas of 0.957.\par
+
+Notice that if we reduce the weight of precision (increase $\beta$) our best model measured by f1-meas will move towards the Random Forest original unbalanced dataset.\par
+The results with $\beta$ equal to 1:\par
+
+```{r echo=FALSE}
+# Calculation of the F meas for all our Random Forest models, with beta=1
+b<-1
+F_meas_rf<-F_meas(rf_model_preds,test$quality, beta=b)
+F_meas_rf_up<-F_meas(rf_preds_up,test$quality, beta=b)
+F_meas_rf_down<-F_meas(rf_preds_down,test$quality, beta=b)
+F_meas_rf_rose<-F_meas(rf_preds_rose,test$quality, beta=b)
+F_meas_rf_smote<-F_meas(rf_preds_smote,test$quality, beta=b)
+
+f_meas_values<-c(F_meas_rf,F_meas_rf_up,F_meas_rf_down,                          F_meas_rf_rose,F_meas_rf_smote)
+model<-c("Random Forest", "Random Forest Upsampling", "Random Forest Downsampling","Random Forest ROSE", "Random Forest SMOTE")
+data.frame(model,f_meas_values)%>%knitr::kable()
+```
+
+Finally we can also check which features are more important to the wine classification from our chosen model, **Random Forest with downsampling**:
+
+```{r echo=FALSE}
+varImp(train_rf_down)
+```
+
+The alcohol is the most important feature, followed by sulfates (antimicrobial and antioxidant) and volatile acidity (too high levels lead to vinegar taste).
+
+## 7. Conclusion
+
+Due to the unbalanced nature of our data, with a reduced number of good wines, we had to use techniques to balance it. The results improved only if we add more weight to the precision of our model. We used F-meas score with weighted $\beta$ equal to 0.25 to evaluate the models.
+We used the final model to identify the most important features of red wine to access it's quality.
+Future results can be improved and also new models and approaches used if we had a bigger dataset with more good wines and also more features of the wine, like region, type of grapes, price or year of production.
+
+
+
+
